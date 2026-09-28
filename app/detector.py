@@ -7,6 +7,7 @@ from app.db import Wallet
 
 
 LAMPORTS_PER_SOL = 1_000_000_000
+FEE_ONLY_SOL_THRESHOLD = 0.0001
 
 # Pump bonding curve и PumpSwap program ids. Если Pump изменит программы, список
 # можно расширить без переписывания остальной логики.
@@ -74,11 +75,19 @@ def detect_activity_events(tx: dict[str, Any], wallets: list[Wallet]) -> list[Ac
 
         sol_change = _net_sol_change(wallet.address, native_transfers, account_data)
         token_changes = _net_token_changes(wallet.address, token_transfers, account_data)
+        event_type = str(tx.get("type") or "UNKNOWN")
+
+        # Не уведомляем о техническом вызове, где кошелек заплатил только fee.
+        # Настоящие TRANSFER оставляем даже при очень маленькой сумме.
+        is_transfer = "TRANSFER" in event_type.upper()
+        if not token_changes and abs(sol_change) < FEE_ONLY_SOL_THRESHOLD and not is_transfer:
+            continue
+
         events.append(
             ActivityEvent(
                 wallet=wallet,
                 signature=signature,
-                event_type=str(tx.get("type") or "UNKNOWN"),
+                event_type=event_type,
                 source=str(tx.get("source") or "UNKNOWN"),
                 description=str(tx.get("description") or ""),
                 sol_change=sol_change,

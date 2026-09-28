@@ -64,6 +64,26 @@ class DetectorTest(unittest.TestCase):
 
         self.assertEqual(detect_activity_events(tx, [wallet]), [])
 
+    def test_ignores_fee_only_unknown_activity(self):
+        wallet = Wallet(1, "Wallet1111111111111111111111111111111111", "Test", True, None, 0)
+        tx = {
+            "signature": "fee-only",
+            "type": "UNKNOWN",
+            "accountData": [{"account": wallet.address, "nativeBalanceChange": -10565}],
+        }
+
+        self.assertEqual(detect_activity_events(tx, [wallet]), [])
+
+    def test_keeps_small_sol_transfer(self):
+        wallet = Wallet(1, "Wallet1111111111111111111111111111111111", "Test", True, None, 0)
+        tx = {
+            "signature": "small-transfer",
+            "type": "TRANSFER",
+            "accountData": [{"account": wallet.address, "nativeBalanceChange": -15565}],
+        }
+
+        self.assertEqual(len(detect_activity_events(tx, [wallet])), 1)
+
     def test_detects_pump_buy_above_threshold(self):
         wallet = Wallet(
             id=1,
