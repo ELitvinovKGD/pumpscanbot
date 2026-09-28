@@ -52,8 +52,8 @@ class HeliusClient:
         webhook_id = self.settings.helius_webhook_id or self.db.get_setting("helius_webhook_id")
         body: dict[str, Any] = {
             "webhookURL": f"{self.settings.public_webhook_url}/helius/webhook",
-            # Пустой список означает все типы: swap, transfer, stake и другие.
-            "transactionTypes": [],
+            # ANY совместим и со старыми webhook, созданными через прежний API.
+            "transactionTypes": ["ANY"],
             "accountAddresses": addresses,
             "webhookType": "enhanced",
             "txnStatus": "success",
@@ -77,7 +77,9 @@ class HeliusClient:
                 )
                 action = "создан"
 
-        response.raise_for_status()
+        if response.is_error:
+            detail = response.text.strip()[:500]
+            raise RuntimeError(f"Helius HTTP {response.status_code}: {detail or response.reason_phrase}")
         data = response.json()
         new_webhook_id = str(data.get("webhookID") or webhook_id or "")
         if new_webhook_id:
@@ -91,7 +93,12 @@ class HeliusClient:
                     params={"api-key": self.settings.helius_api_key},
                     json={"active": True},
                 )
-            toggle_response.raise_for_status()
+            if toggle_response.is_error:
+                detail = toggle_response.text.strip()[:500]
+                raise RuntimeError(
+                    f"Helius activation HTTP {toggle_response.status_code}: "
+                    f"{detail or toggle_response.reason_phrase}"
+                )
             reactivated = True
 
         self.db.set_setting("helius_webhook_active", "1")
