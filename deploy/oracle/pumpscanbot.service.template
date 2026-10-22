@@ -1,0 +1,17 @@
+[Unit]
+Description=PumpScanBot Telegram and Helius webhook service
+After=network-online.target pumpscanbot-ngrok.service
+Wants=network-online.target
+Requires=pumpscanbot-ngrok.service
+
+[Service]
+Type=simple
+User=@@APP_USER@@
+WorkingDirectory=@@APP_DIR@@
+ExecStart=@@APP_DIR@@/.venv/bin/python @@APP_DIR@@/scripts/server_start.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
