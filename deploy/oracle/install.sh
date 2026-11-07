@@ -62,8 +62,19 @@ python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 mkdir -p "$APP_DIR/data"
 chmod 700 "$APP_DIR/data"
-if [[ -f "$APP_DIR/data/pumpscanbot.sqlite3" ]]; then
-    chmod 600 "$APP_DIR/data/pumpscanbot.sqlite3"
+
+DATABASE_VALUE="$(grep -E '^DATABASE_PATH=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- || true)"
+DATABASE_VALUE="${DATABASE_VALUE:-data/pumpscanbot.sqlite3}"
+if [[ "$DATABASE_VALUE" = /* ]]; then
+    DATABASE_PATH="$DATABASE_VALUE"
+else
+    DATABASE_PATH="$APP_DIR/$DATABASE_VALUE"
+fi
+
+mkdir -p "$(dirname "$DATABASE_PATH")"
+chmod 700 "$(dirname "$DATABASE_PATH")"
+if [[ -f "$DATABASE_PATH" ]]; then
+    chmod 600 "$DATABASE_PATH"
 fi
 chmod +x "$APP_DIR/deploy/oracle/run_ngrok.sh"
 

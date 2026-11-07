@@ -20,10 +20,11 @@ def main_menu() -> InlineKeyboardMarkup:
 
 
 def persistent_menu() -> ReplyKeyboardMarkup:
-    """Постоянная клавиатура внизу Telegram.
+    """Клавиатура быстрых действий внизу Telegram.
 
     Inline-кнопки удобны для карточек кошельков, но старое сообщение легко
-    теряется выше в чате. Эта клавиатура всегда остается под рукой.
+    теряется выше в чате. Не запрашиваем persistent-режим: на мобильном он
+    перехватывает системный жест «назад» даже после скрытия клавиатуры.
     """
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -34,7 +35,7 @@ def persistent_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text="Sync Helius"), KeyboardButton(text="Тест уведомления")],
         ],
         resize_keyboard=True,
-        is_persistent=True,
+        is_persistent=False,
         input_field_placeholder="Выбери действие",
     )
 
