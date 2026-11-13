@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from time import time
 from typing import Any
 
@@ -21,6 +22,7 @@ class HeliusClient:
     ADMIN_BASE_URL = "https://admin-api.helius.xyz/v0/admin"
     LAST_SYNCED_URL_KEY = "helius_synced_webhook_url"
     LAST_SYNCED_AT_KEY = "helius_last_sync_at"
+    SYNCED_ADDRESSES_KEY = "helius_synced_addresses_fp"
 
     def __init__(self, settings: Settings, db: Database) -> None:
         self.settings = settings
@@ -104,9 +106,22 @@ class HeliusClient:
         self.db.set_setting("helius_webhook_active", "1")
         self.db.set_setting(self.LAST_SYNCED_URL_KEY, self.webhook_url)
         self.db.set_setting(self.LAST_SYNCED_AT_KEY, str(int(time())))
+        self.db.set_setting(self.SYNCED_ADDRESSES_KEY, _addresses_fingerprint(addresses))
 
         suffix = " Webhook был выключен и теперь снова включен." if reactivated else ""
         return f"Helius webhook {action}: {len(addresses)} адрес(ов).{suffix}"
+
+    async def sync_tracked(self, force: bool = False) -> str:
+        """Синхронизируем webhook со всеми отслеживаемыми адресами всех пользователей.
+
+        Если набор адресов не изменился (например, второй пользователь добавил
+        уже отслеживаемый адрес или переименовал кошелек), платный запрос к
+        Helius не делаем.
+        """
+        addresses = self.db.tracked_addresses()
+        if not force and self.db.get_setting(self.SYNCED_ADDRESSES_KEY) == _addresses_fingerprint(addresses):
+            return "Список адресов для Helius не изменился; sync не нужен."
+        return await self.sync_webhook(addresses)
 
     @property
     def webhook_url(self) -> str:
@@ -146,3 +161,7 @@ class HeliusClient:
             response = await client.get(url, headers={"X-Api-Key": self.settings.helius_api_key})
         response.raise_for_status()
         return response.json()
+
+
+def _addresses_fingerprint(addresses: list[str]) -> str:
+    return hashlib.sha256(",".join(sorted(set(addresses))).encode()).hexdigest()

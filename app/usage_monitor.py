@@ -8,6 +8,7 @@ from aiogram import Bot
 from app.config import Settings
 from app.db import Database
 from app.helius import HeliusClient
+from app.notifier import safe_send
 from app.usage import format_helius_usage_payload, is_usage_below_threshold, usage_warning_key
 
 
@@ -35,7 +36,7 @@ async def run_usage_monitor(bot: Bot, db: Database, settings: Settings, helius: 
 
 
 async def _check_once(bot: Bot, db: Database, settings: Settings, helius: HeliusClient) -> None:
-    chats = db.list_notification_chats()
+    chats = list(settings.telegram_admin_user_ids)
     if not chats:
         return
 
@@ -53,11 +54,8 @@ async def _check_once(bot: Bot, db: Database, settings: Settings, helius: Helius
     )
     sent = False
     for chat_id in chats:
-        try:
-            await bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
+        if await safe_send(bot, chat_id, text):
             sent = True
-        except Exception:
-            continue
 
     # Помечаем предупреждение только если хотя бы одно сообщение реально ушло.
     if sent:

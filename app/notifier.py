@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import html
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 
-from app.db import Database, Wallet, short_address
+from app.db import Wallet, short_address
 from app.detector import ActivityEvent, BuyEvent, SellEvent
 from app.market_data import DexScreenerClient, TokenQuote, USDC_MINT, USDT_MINT
 
@@ -19,6 +22,40 @@ ACTIVITY_NAMES = {
     "UNSTAKE_SOL": "Вывод SOL из стейкинга",
 }
 MARKET_DATA = DexScreenerClient()
+# Время в уведомлениях показываем по Тбилиси, а не по часовому поясу сервера
+# (на Oracle VM это UTC).
+DISPLAY_TZ = timezone(timedelta(hours=4))
+
+logger = logging.getLogger(__name__)
+
+
+def owner_chat_id(wallet: Wallet) -> int:
+    """В личке с ботом chat_id совпадает с user_id, поэтому есть надёжный fallback."""
+    return wallet.owner_chat_id or wallet.owner_id
+
+
+async def safe_send(bot: Bot, chat_id: int, text: str, **kwargs: object) -> bool:
+    """Отправка с логированием ошибок и одной повторной попыткой при flood-limit."""
+    kwargs.setdefault("disable_web_page_preview", True)
+    for attempt in range(2):
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            return True
+        except TelegramRetryAfter as exc:
+            if attempt == 0:
+                await asyncio.sleep(min(exc.retry_after, 30))
+                continue
+            logger.warning("Telegram flood limit for chat %s, message dropped", chat_id)
+        except TelegramForbiddenError:
+            logger.info("Chat %s blocked the bot, message skipped", chat_id)
+        except Exception:
+            logger.exception("Failed to send Telegram message to chat %s", chat_id)
+        return False
+    return False
+
+
+def _format_time(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, DISPLAY_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def format_buy_event(event: BuyEvent) -> str:
@@ -27,8 +64,7 @@ def format_buy_event(event: BuyEvent) -> str:
     mint_url = f"https://pump.fun/coin/{event.token_mint}"
     when = ""
     if event.timestamp:
-        when_dt = datetime.fromtimestamp(event.timestamp)
-        when = f"\nВремя: <code>{when_dt:%Y-%m-%d %H:%M:%S}</code>"
+        when = f"\nВремя: <code>{_format_time(event.timestamp)}</code>"
 
     return (
         "🟢 <b>Покупка pump-токена</b>\n\n"
@@ -43,19 +79,9 @@ def format_buy_event(event: BuyEvent) -> str:
     )
 
 
-async def notify_buy_event(bot: Bot, db: Database, event: BuyEvent) -> None:
-    chats = db.list_notification_chats()
-    if not chats:
-        return
-
-    text = format_buy_event(event)
-    for chat_id in chats:
-        # Если пользователь заблокировал бота, просто пропускаем ошибку: один
-        # мертвый чат не должен останавливать уведомления всем остальным.
-        try:
-            await bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
-        except Exception:
-            continue
+async def notify_buy_event(bot: Bot, event: BuyEvent) -> bool:
+    """Уведомление получает только владелец кошелька."""
+    return await safe_send(bot, owner_chat_id(event.wallet), format_buy_event(event))
 
 
 def format_sell_event(event: SellEvent) -> str:
@@ -64,8 +90,7 @@ def format_sell_event(event: SellEvent) -> str:
     mint_url = f"https://pump.fun/coin/{event.token_mint}"
     when = ""
     if event.timestamp:
-        when_dt = datetime.fromtimestamp(event.timestamp)
-        when = f"\nВремя: <code>{when_dt:%Y-%m-%d %H:%M:%S}</code>"
+        when = f"\nВремя: <code>{_format_time(event.timestamp)}</code>"
 
     return (
         "🔴 <b>Продажа pump-токена</b>\n\n"
@@ -80,17 +105,8 @@ def format_sell_event(event: SellEvent) -> str:
     )
 
 
-async def notify_sell_event(bot: Bot, db: Database, event: SellEvent) -> None:
-    chats = db.list_notification_chats()
-    if not chats:
-        return
-
-    text = format_sell_event(event)
-    for chat_id in chats:
-        try:
-            await bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
-        except Exception:
-            continue
+async def notify_sell_event(bot: Bot, event: SellEvent) -> bool:
+    return await safe_send(bot, owner_chat_id(event.wallet), format_sell_event(event))
 
 
 def format_activity_event(event: ActivityEvent, quotes: dict[str, TokenQuote] | None = None) -> str:
@@ -100,8 +116,7 @@ def format_activity_event(event: ActivityEvent, quotes: dict[str, TokenQuote] | 
     title = ACTIVITY_NAMES.get(event.event_type.upper(), "Действие кошелька")
     when = ""
     if event.timestamp:
-        when_dt = datetime.fromtimestamp(event.timestamp)
-        when = f"\nВремя: <code>{when_dt:%Y-%m-%d %H:%M:%S}</code>"
+        when = f"\nВремя: <code>{_format_time(event.timestamp)}</code>"
 
     sent = [(mint, abs(amount)) for mint, amount in event.token_changes if amount < 0]
     received = [(mint, amount) for mint, amount in event.token_changes if amount > 0]
@@ -136,14 +151,9 @@ def format_activity_event(event: ActivityEvent, quotes: dict[str, TokenQuote] | 
     )
 
 
-async def notify_activity_event(bot: Bot, db: Database, event: ActivityEvent) -> None:
+async def notify_activity_event(bot: Bot, event: ActivityEvent) -> bool:
     quotes = await MARKET_DATA.get_quotes([mint for mint, _ in event.token_changes])
-    text = format_activity_event(event, quotes)
-    for chat_id in db.list_notification_chats():
-        try:
-            await bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
-        except Exception:
-            continue
+    return await safe_send(bot, owner_chat_id(event.wallet), format_activity_event(event, quotes))
 
 
 def _format_token_amount(
@@ -170,7 +180,10 @@ def _format_number(value: float, decimals: int = 6) -> str:
 
 def format_wallet_details(wallet: Wallet, global_min_sol: float) -> str:
     specific_min = wallet.min_sol
-    min_text = f"{specific_min} SOL" if specific_min is not None else f"глобальный ({global_min_sol} SOL)"
+    if specific_min is not None:
+        min_text = f"{specific_min} SOL"
+    else:
+        min_text = f"общий ({wallet.effective_min_sol(global_min_sol)} SOL)"
     status = "включен" if wallet.enabled else "выключен"
     return (
         f"<b>{html.escape(wallet.effective_label)}</b>\n\n"

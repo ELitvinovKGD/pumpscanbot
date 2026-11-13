@@ -5,6 +5,7 @@ import asyncio
 from app.config import Settings
 from app.db import Database
 from app.helius import HeliusClient
+from app.main import _migrate_single_user_data
 
 
 async def main() -> None:
@@ -15,8 +16,9 @@ async def main() -> None:
     """
     settings = Settings.load()
     db = Database(settings.database_path)
+    _migrate_single_user_data(db, settings)
     helius = HeliusClient(settings, db)
-    addresses = [wallet.address for wallet in db.list_wallets(enabled_only=True)]
+    addresses = db.tracked_addresses()
     print(await helius.sync_webhook(addresses))
 
 

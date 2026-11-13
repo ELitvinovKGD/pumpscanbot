@@ -7,20 +7,21 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-def _split_ints(raw_value: str) -> set[int]:
-    """Парсим строку вида '123,456' в set[int].
+def _split_ints(raw_value: str) -> tuple[int, ...]:
+    """Парсим строку вида '123,456' в кортеж id с сохранением порядка.
 
-    Пустое значение означает, что список админов не задан. В таком режиме бот
-    будет доступен любому пользователю, который ему напишет. Для pet project это
-    удобно на старте, но для постоянного запуска лучше указать свой Telegram id.
+    Первый id в списке считается главным админом: ему при миграции достаются
+    кошельки, которые были добавлены до появления многопользовательского режима.
     """
-    result: set[int] = set()
+    result: list[int] = []
     for part in raw_value.split(","):
         part = part.strip()
         if not part:
             continue
-        result.add(int(part))
-    return result
+        value = int(part)
+        if value not in result:
+            result.append(value)
+    return tuple(result)
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -39,7 +40,7 @@ class Settings:
     """
 
     telegram_bot_token: str
-    telegram_admin_user_ids: set[int]
+    telegram_admin_user_ids: tuple[int, ...]
     helius_api_key: str
     helius_project_id: str
     helius_webhook_id: str
@@ -52,6 +53,7 @@ class Settings:
     database_path: Path
     helius_usage_warn_percent: int
     helius_usage_check_interval_minutes: int
+    default_wallet_limit: int = 5
 
     @classmethod
     def load(cls) -> "Settings":
@@ -72,7 +74,15 @@ class Settings:
             database_path=Path(os.getenv("DATABASE_PATH", "data/pumpscanbot.sqlite3")),
             helius_usage_warn_percent=int(os.getenv("HELIUS_USAGE_WARN_PERCENT", "10")),
             helius_usage_check_interval_minutes=int(os.getenv("HELIUS_USAGE_CHECK_INTERVAL_MINUTES", "360")),
+            default_wallet_limit=int(os.getenv("DEFAULT_WALLET_LIMIT", "5")),
         )
+
+    @property
+    def primary_admin_id(self) -> int | None:
+        return self.telegram_admin_user_ids[0] if self.telegram_admin_user_ids else None
+
+    def is_admin(self, user_id: int | None) -> bool:
+        return user_id is not None and user_id in self.telegram_admin_user_ids
 
     def validate_for_startup(self) -> None:
         """Проверяем только обязательные поля.
@@ -82,3 +92,10 @@ class Settings:
         """
         if not self.telegram_bot_token or "PASTE_" in self.telegram_bot_token:
             raise RuntimeError("Заполни TELEGRAM_BOT_TOKEN в .env")
+        if not self.telegram_admin_user_ids:
+            # Без админа некому одобрять заявки, а раньше пустой список означал
+            # «бот открыт всем». Явно запрещаем такой запуск.
+            raise RuntimeError(
+                "Заполни TELEGRAM_ADMIN_USER_IDS в .env: свой Telegram user id "
+                "(узнать можно у @userinfobot). Без админа некому одобрять заявки."
+            )

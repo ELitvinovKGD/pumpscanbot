@@ -68,9 +68,10 @@ def detect_activity_events(tx: dict[str, Any], wallets: list[Wallet]) -> list[Ac
     account_data = tx.get("accountData") or []
     timestamp = tx.get("timestamp")
     events: list[ActivityEvent] = []
+    tx_text = str(tx)
 
     for wallet in wallets:
-        if not wallet.enabled or not _transaction_mentions_wallet(tx, wallet.address):
+        if not wallet.enabled or wallet.address not in tx_text:
             continue
 
         sol_change = _net_sol_change(wallet.address, native_transfers, account_data)
@@ -139,7 +140,7 @@ def detect_buy_events(
     events: list[BuyEvent] = []
     for wallet in active_wallets:
         sol_spent = _sum_sol_spent(wallet.address, native_transfers, account_data)
-        min_sol = wallet.min_sol if wallet.min_sol is not None else global_min_sol
+        min_sol = wallet.effective_min_sol(global_min_sol)
         if sol_spent < min_sol:
             continue
 
@@ -199,7 +200,7 @@ def detect_sell_events(
     events: list[SellEvent] = []
     for wallet in active_wallets:
         sol_received = _sum_sol_received(wallet.address, native_transfers, account_data)
-        min_sol = wallet.min_sol if wallet.min_sol is not None else global_min_sol
+        min_sol = wallet.effective_min_sol(global_min_sol)
         if sol_received < min_sol:
             continue
 
@@ -293,17 +294,23 @@ def _received_tokens(
     """Токены, которые кошелек получил в транзакции."""
     tokens: dict[str, float] = {}
 
+    # accountData.tokenBalanceChanges — итоговое изменение баланса, это
+    # точнее. tokenTransfers используем только если изменений балансов нет:
+    # раньше суммировались оба источника, и количество токенов удваивалось.
+    balance_changes = _token_balance_changes(wallet_address, account_data)
+    if balance_changes:
+        for change in balance_changes:
+            amount = _token_change_amount(change)
+            if amount > 0:
+                _add_token_amount(tokens, str(change.get("mint") or ""), amount)
+        return tokens
+
     for transfer in token_transfers:
         if str(transfer.get("toUserAccount") or "") != wallet_address:
             continue
         if str(transfer.get("fromUserAccount") or "") == wallet_address:
             continue
         _add_token_amount(tokens, str(transfer.get("mint") or ""), _safe_float(transfer.get("tokenAmount")))
-
-    for change in _token_balance_changes(wallet_address, account_data):
-        amount = _token_change_amount(change)
-        if amount > 0:
-            _add_token_amount(tokens, str(change.get("mint") or ""), amount)
 
     return tokens
 
@@ -316,17 +323,20 @@ def _sent_tokens(
     """Токены, которые кошелек отправил/продал в транзакции."""
     tokens: dict[str, float] = {}
 
+    balance_changes = _token_balance_changes(wallet_address, account_data)
+    if balance_changes:
+        for change in balance_changes:
+            amount = _token_change_amount(change)
+            if amount < 0:
+                _add_token_amount(tokens, str(change.get("mint") or ""), abs(amount))
+        return tokens
+
     for transfer in token_transfers:
         if str(transfer.get("fromUserAccount") or "") != wallet_address:
             continue
         if str(transfer.get("toUserAccount") or "") == wallet_address:
             continue
         _add_token_amount(tokens, str(transfer.get("mint") or ""), _safe_float(transfer.get("tokenAmount")))
-
-    for change in _token_balance_changes(wallet_address, account_data):
-        amount = _token_change_amount(change)
-        if amount < 0:
-            _add_token_amount(tokens, str(change.get("mint") or ""), abs(amount))
 
     return tokens
 
@@ -460,7 +470,8 @@ def summarize_for_debug(tx: dict[str, Any], wallets: list[Wallet]) -> str:
 
 
 def transaction_touches_wallets(tx: dict[str, Any], wallets: list[Wallet]) -> bool:
-    return any(_transaction_mentions_wallet(tx, wallet.address) for wallet in wallets)
+    tx_text = str(tx)
+    return any(wallet.address in tx_text for wallet in wallets)
 
 
 def _transaction_mentions_wallet(tx: dict[str, Any], wallet_address: str) -> bool:
